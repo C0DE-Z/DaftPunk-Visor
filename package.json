@@ -1,0 +1,14 @@
+{
+  "name": "visor-webapp",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Static control surface for the RP2040 visor.",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "dev": "npx serve -l 4173 ."
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0",
+    "serve": "^14.2.0"
+  }
+}

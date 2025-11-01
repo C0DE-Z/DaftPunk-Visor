@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Visor Control Icon</title>
+  <desc id="desc">A stylised visor waveform</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f6bff"/>
+      <stop offset="50%" stop-color="#7a45ff"/>
+      <stop offset="100%" stop-color="#ff4ec3"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="#05060c"/>
+  <rect x="48" y="144" width="416" height="224" rx="72" fill="url(#bg)"/>
+  <path d="M72 256c48-72 96-72 144 0s96 72 144 0 96-72 144 0" fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="132" cy="256" r="18" fill="#ffffff" opacity="0.75"/>
+  <circle cx="380" cy="256" r="18" fill="#ffffff" opacity="0.75"/>
+</svg>

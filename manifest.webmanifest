@@ -1,0 +1,19 @@
+{
+  "name": "Visor Control",
+  "short_name": "Visor",
+  "description": "Control, preview, and queue visor patterns from any device.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#05060c",
+  "theme_color": "#0f6bff",
+  "lang": "en",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

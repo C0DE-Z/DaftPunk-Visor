@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Control and preview your RP2040 visor patterns from any device.">
+  <meta name="theme-color" content="#0f6bff">
+  <meta name="application-name" content="Visor Control">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="color-scheme" content="dark">
+  <title>Visor Control</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" href="icons/icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="auth-overlay" class="auth-overlay" role="dialog" aria-modal="true">
+    <form id="password-form" class="auth-card">
+      <h2>Enter Access Password</h2>
+      <p>Locked due to inactivity.</p>
+      <label for="password-input">Password</label>
+      <input type="password" id="password-input" autocomplete="off" required>
+      <button type="submit">Unlock</button>
+      <span id="password-error" class="error" aria-live="polite"></span>
+    </form>
+  </div>
+  <main class="wrap">
+    <h1>Local Visor Control</h1>
+    <p class="note">Please Connect to Wifi to unlock all patterns.</p>
+    <div id="connection-status" class="status-banner" role="status">Checking network…</div>
+    <div id="api-status" class="status-banner muted" role="status">API: awaiting contact…</div>
+    <button id="connect" class="primary">Connect Visor</button>
+  <button id="ping" class="ghost">Ping Helmet</button>
+
+    <section class="panel">
+      <h2>Modes</h2>
+      <div class="modes" id="mode-buttons">
+  <button data-mode="0">All Off</button>
+  <button data-mode="1">Smooth Rainbow</button>
+  <button data-mode="2">Rainbow Sweep</button>
+  <button data-mode="3">Swoop Effect</button>
+  <button data-mode="4">Mirrored Swoop</button>
+  <button data-mode="5">Scrolling Text</button>
+  <button data-mode="6">Gallery Cycle</button>
+  <button data-mode="7">Color Wipe</button>
+  <button data-mode="8">Theater Chase</button>
+  <button data-mode="9">Plasma</button>
+  <button data-mode="10">Sparkle</button>
+  <button data-mode="11">Wave Gradient</button>
+  <button data-mode="12">Comet Stream</button>
+  <button data-mode="13">Blinking Eyes</button>
+  <button data-mode="14">Daft Scan</button>
+  <button data-mode="15">Daft Pulse</button>
+  <button data-mode="16">Cyber Mesh</button>
+  <button data-mode="17">Neon Surge</button>
+  <button data-mode="18">Glitch Rain</button>
+  <button data-mode="19">Vector Tunnel</button>
+  <button data-mode="20">Custom Slot 1</button>
+  <button data-mode="21">Custom Slot 2</button>
+  <button data-mode="22">Custom Slot 3</button>
+  <button data-mode="23">TV Static</button>
+  <button data-mode="24">TV Test Screen</button>
+  <button data-mode="25">CRT HUD</button>
+  <button data-mode="26">Cat Ears</button>
+  <button data-mode="27">Cat Ears Blink</button>
+  <button data-mode="28">Lyric Visualizer</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Pattern Preview</h2>
+      <canvas id="pattern-preview" width="320" height="80" aria-label="Pattern preview"></canvas>
+      <div class="preview-controls">
+        <button type="button" id="preview-play" class="accent">Play</button>
+        <button type="button" id="preview-pause">Pause</button>
+        <span id="preview-label" class="preview-label">Select a mode to preview.</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Message</h2>
+      <form id="text-form">
+        <input type="text" id="text-input" maxlength="64" placeholder="Enter visor text" autocomplete="off">
+        <button type="submit">Send Text</button>
+      </form>
+      <div class="current-text-row" aria-live="polite">
+        <span class="current-text-label">Current Text</span>
+        <span id="current-text-display" class="current-text-value">GLOVE U</span>
+      </div>
+      <div class="slider-group">
+        <label for="text-speed" class="slider-label">Scroll Speed</label>
+        <input type="range" id="text-speed" min="1" max="100" value="50">
+        <span id="text-speed-value" class="slider-value">50%</span>
+      </div>
+      <div class="field-group">
+        <label for="text-transition">Text Transition</label>
+        <select id="text-transition">
+          <option value="0">None</option>
+          <option value="1">Blink In</option>
+          <option value="2">Fade Up</option>
+          <option value="3">Glow Pulse</option>
+        </select>
+      </div>
+      <div class="field-group">
+        <label for="text-color">Text Color</label>
+        <input type="color" id="text-color" value="#FFB428">
+      </div>
+      <p class="tip small">Adjust the text scroll speed, transitions, and color.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Mirrored Swoop Colors</h2>
+      <div class="swoop-colors">
+        <label class="color-picker" for="swoop-left">
+          <span>Left Beam</span>
+          <input type="color" id="swoop-left" value="#00B4FF">
+        </label>
+        <label class="color-picker" for="swoop-right">
+          <span>Right Beam</span>
+          <input type="color" id="swoop-right" value="#FFB400">
+        </label>
+      </div>
+      <p class="tip small">Updates the Mirrored Swoop mode color pairing instantly.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Lyric Script</h2>
+      <form id="lyric-form" class="lyric-form">
+        <textarea id="lyric-input" rows="3" maxlength="160" placeholder="Type words or phrases separated by spaces"></textarea>
+        <div class="lyric-actions">
+          <button type="submit" class="accent">Send Lyrics</button>
+          <button type="button" id="lyric-reset" class="ghost">Reset to Default</button>
+        </div>
+      </form>
+      <p class="tip small">Used by the Lyric Visualizer mode. Changes sync instantly to the helmet.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Brightness</h2>
+      <div class="slider-group">
+        <input type="range" id="brightness" min="1" max="255" value="26">
+        <span id="brightness-value" class="slider-value">26</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Pixel Studio</h2>
+      <div class="studio-controls">
+        <label class="color-picker" for="color-picker">
+          <span>Brush Color</span>
+          <input type="color" id="color-picker" value="#ff3366">
+        </label>
+        <button type="button" id="sample-color" class="active-toggle">Eyedrop</button>
+        <button type="button" id="toggle-eraser" class="active-toggle">Eraser Off</button>
+        <div class="slot-control">
+          <span>Visor Slot</span>
+          <select id="frame-slot">
+            <option value="0">Slot 1</option>
+            <option value="1">Slot 2</option>
+            <option value="2">Slot 3</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid-shell">
+        <div class="pixel-grid" id="pixel-grid" aria-label="32 by 8 pixel editor"></div>
+      </div>
+      <div class="studio-actions">
+        <button type="button" id="clear-grid">Clear</button>
+        <button type="button" id="fill-grid">Fill</button>
+        <button type="button" id="send-frame" class="accent">Send to Visor</button>
+        <button type="button" id="preview-frame">Preview Slot</button>
+        <button type="button" id="clear-slot" class="danger">Clear Slot on Visor</button>
+      </div>
+      <div class="preset-bar">
+        <input type="text" id="preset-name" maxlength="24" placeholder="Preset name">
+        <button type="button" id="save-preset">Save</button>
+        <select id="preset-select">
+          <option value="">Load preset…</option>
+        </select>
+        <button type="button" id="load-preset">Load</button>
+        <button type="button" id="delete-preset">Delete</button>
+      </div>
+      <p class="tip">Saved presets live in your browser storage. Send a preset to copy it into the visor’s custom slots.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Device Log</h2>
+      <pre id="log" aria-live="polite"></pre>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
