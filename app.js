@@ -11,6 +11,21 @@ const LOG_LIMIT = 8000;
 const SESSION_UNLOCK_KEY = 'visorPortalUnlocked.v1';
 const REMOTE_UNLOCK_WINDOW_MS = 20000;
 
+const WEBUSB_VENDOR_FILTERS = [
+  { vendorId: 0x239A }, // Adafruit
+  { vendorId: 0x2E8A }, // Raspberry Pi (RP2040)
+];
+const remoteOnly = (() => {
+  try{
+    const params = new URLSearchParams(window.location.search);
+    return params.get('remoteOnly') === '1' || params.get('remoteOnly') === 'true';
+  }catch(err){
+    return false;
+  }
+})();
+const supportsWebUSB = typeof navigator !== 'undefined' && 'usb' in navigator;
+const supportsWebSerial = typeof navigator !== 'undefined' && 'serial' in navigator;
+
 const ACCESS_PASSWORD = '1113';
 const API_BASE = 'http://localhost:3000/api/visor';
 const API_STATUS_ENDPOINT = `${API_BASE}/status`;
@@ -369,6 +384,12 @@ function scheduleTextSpeedCommand(value){
 let port = null;
 let writer = null;
 let reader = null;
+let usbDevice = null;
+let usbInterfaceNumber = null;
+let usbEndpointIn = null;
+let usbEndpointOut = null;
+let transportType = 'none';
+let usbDisconnectListenerAttached = false;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 let isConnected = false;
@@ -418,6 +439,30 @@ const sessionUnlocked = (() => {
 
 let presets = {};
 
+function transportReady(){
+  if(transportType === 'webserial'){
+    return Boolean(port && writer);
+  }
+  if(transportType === 'webusb'){
+    return Boolean(usbDevice && usbEndpointOut != null);
+  }
+  return false;
+}
+
+async function writeToTransport(bytes){
+  if(transportType === 'webserial'){
+    if(!writer) throw new Error('Not connected');
+    await writer.write(bytes);
+    return;
+  }
+  if(transportType === 'webusb'){
+    if(!usbDevice || usbEndpointOut == null) throw new Error('Not connected');
+    await usbDevice.transferOut(usbEndpointOut, bytes);
+    return;
+  }
+  throw new Error('Not connected');
+}
+
 function appendLog(message){
   if(!message) return;
   const lines = message.replace(/\r/g,'').split(/\n/);
@@ -448,14 +493,18 @@ function appendLog(message){
 }
 
 async function sendCommand(command){
-  if(!writer){
-    appendLog('Not connected');
-    return;
-  }
   const trimmed = command.trim();
+  if(!trimmed) return;
   const payload = trimmed + '\n';
   try{
-    await writer.write(encoder.encode(payload));
+    if(transportReady()){
+      await writeToTransport(encoder.encode(payload));
+    } else if(remoteOnly){
+      appendLog(`[remote] ${trimmed}`);
+    } else {
+      appendLog('Not connected');
+      return;
+    }
     if(unlocked){
       const parts = trimmed.split(/\s+/);
       const commandName = parts[0] ? parts[0].toUpperCase() : '';
@@ -555,7 +604,7 @@ async function sendCommand(command){
   }
 }
 
-async function readLoop(){
+async function readSerialLoop(){
   while(port && port.readable){
     reader = port.readable.getReader();
     try{
@@ -578,58 +627,212 @@ async function readLoop(){
   }
 }
 
+async function readUsbLoop(){
+  if(!usbDevice || usbEndpointIn == null) return;
+  try{
+    while(usbDevice && transportType === 'webusb'){
+      const result = await usbDevice.transferIn(usbEndpointIn, 256);
+      if(result.status !== 'ok' || !result.data){
+        if(result.status === 'stall' && usbDevice){
+          try{
+            await usbDevice.clearHalt('in', usbEndpointIn);
+          }catch(err){
+            appendLog('USB clearHalt failed: ' + err.message);
+            break;
+          }
+        }
+        continue;
+      }
+      const view = result.data;
+      const chunk = new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
+      if(chunk.length){
+        appendLog(decoder.decode(chunk));
+      }
+    }
+  }catch(err){
+    appendLog('Read error: ' + err.message);
+  }
+}
+
 async function connect(){
-  if(!('serial' in navigator)){
-    appendLog('Web Serial not supported on this device.');
+  if(remoteOnly){
+    appendLog('Remote-only mode – USB connection disabled.');
     return;
   }
+  if(isConnected){
+    await disconnect();
+    return;
+  }
+  if(supportsWebUSB){
+    const connected = await connectWebUSB();
+    if(connected) return;
+  }
+  if(supportsWebSerial){
+    await connectWebSerial();
+    return;
+  }
+  appendLog('This browser does not support WebUSB or Web Serial.');
+}
+
+async function connectWebSerial(){
+  if(!supportsWebSerial) return false;
   try{
     port = await navigator.serial.requestPort();
-    await port.open({baudRate:115200});
+    await port.open({ baudRate: 115200 });
     writer = port.writable.getWriter();
-    appendLog('Connected to visor.');
+    transportType = 'webserial';
     isConnected = true;
     connectButton.textContent = 'Disconnect';
     connectButton.classList.remove('primary');
+    appendLog('Connected to visor over Web Serial.');
     if(unlocked){
-      enqueueRemote({ type:'connection', status:'connected' });
+      enqueueRemote({ type:'connection', status:'connected', transport: 'webserial' });
     }
-    readLoop();
-    port.addEventListener('disconnect', handleDisconnect);
+    readSerialLoop();
+    port.addEventListener('disconnect', handleSerialDisconnect);
+    return true;
   }catch(err){
-    appendLog('Connection failed: ' + err.message);
+    appendLog('Web Serial connection failed: ' + err.message);
+    await disconnectWebSerial();
+    return false;
+  }
+}
+
+async function connectWebUSB(){
+  try{
+    usbDevice = await navigator.usb.requestDevice({ filters: WEBUSB_VENDOR_FILTERS });
+  }catch(err){
+    if(err && err.name === 'NotFoundError'){
+      return false;
+    }
+    appendLog('WebUSB connection failed: ' + err.message);
+    return false;
+  }
+  try{
+    await usbDevice.open();
+    if(usbDevice.configuration === null){
+      await usbDevice.selectConfiguration(1);
+    }
+    const iface = usbDevice.configuration.interfaces.find(({ alternates }) =>
+      alternates && alternates.some(entry => entry.interfaceClass === 0xff));
+    if(!iface){
+      throw new Error('WebUSB interface unavailable.');
+    }
+    const alternate = iface.alternates.find(entry => entry.interfaceClass === 0xff) || iface.alternates[0];
+    await usbDevice.claimInterface(iface.interfaceNumber);
+    await usbDevice.selectAlternateInterface(iface.interfaceNumber, alternate.alternateSetting);
+    const endpoints = alternate.endpoints || [];
+    const inEndpoint = endpoints.find(endpoint => endpoint.direction === 'in');
+    const outEndpoint = endpoints.find(endpoint => endpoint.direction === 'out');
+    if(!inEndpoint || !outEndpoint){
+      throw new Error('Missing WebUSB endpoints.');
+    }
+    usbInterfaceNumber = iface.interfaceNumber;
+    usbEndpointIn = inEndpoint.endpointNumber;
+    usbEndpointOut = outEndpoint.endpointNumber;
+    await usbDevice.controlTransferOut({
+      requestType: 'class',
+      recipient: 'interface',
+      request: 0x22,
+      value: 0x01,
+      index: usbInterfaceNumber
+    });
+    transportType = 'webusb';
+    isConnected = true;
+    connectButton.textContent = 'Disconnect';
+    connectButton.classList.remove('primary');
+    appendLog('Connected to visor over WebUSB.');
+    if(unlocked){
+      enqueueRemote({ type:'connection', status:'connected', transport: 'webusb' });
+    }
+    if(!usbDisconnectListenerAttached){
+      navigator.usb.addEventListener('disconnect', handleUsbDisconnect);
+      usbDisconnectListenerAttached = true;
+    }
+    readUsbLoop();
+    return true;
+  }catch(err){
+    appendLog('WebUSB connection failed: ' + err.message);
+    await disconnectWebUSB();
+    return false;
   }
 }
 
 async function disconnect(){
+  if(transportType === 'webserial'){
+    await disconnectWebSerial();
+  } else if(transportType === 'webusb'){
+    await disconnectWebUSB();
+  }
+  finalizeDisconnect('Disconnected.');
+}
+
+async function disconnectWebSerial(){
   try{
     if(reader){
-      await reader.cancel();
+      await reader.cancel().catch(() => {});
     }
     if(writer){
       writer.releaseLock();
+      writer = null;
     }
     if(port){
+      port.removeEventListener('disconnect', handleSerialDisconnect);
       await port.close();
     }
   }catch(err){
     appendLog('Disconnect error: ' + err.message);
   }finally{
-    handleDisconnect();
+    port = null;
+    reader = null;
+    writer = null;
   }
 }
 
-function handleDisconnect(){
-  if(port){
-    port.removeEventListener('disconnect', handleDisconnect);
+async function disconnectWebUSB(){
+  try{
+    if(usbDevice){
+      if(usbDevice.opened){
+        if(usbInterfaceNumber != null){
+          try{
+            await usbDevice.releaseInterface(usbInterfaceNumber);
+          }catch(err){
+            // ignore release errors
+          }
+        }
+        await usbDevice.close();
+      }
+    }
+  }catch(err){
+    appendLog('Disconnect error: ' + err.message);
+  }finally{
+    usbDevice = null;
+    usbInterfaceNumber = null;
+    usbEndpointIn = null;
+    usbEndpointOut = null;
   }
-  port = null;
-  writer = null;
-  reader = null;
+}
+
+function handleSerialDisconnect(){
+  disconnectWebSerial().finally(() => finalizeDisconnect('Web Serial device disconnected.'));
+}
+
+function handleUsbDisconnect(event){
+  if(!usbDevice || event.device !== usbDevice) return;
+  disconnectWebUSB().finally(() => finalizeDisconnect('WebUSB device disconnected.'));
+}
+
+function finalizeDisconnect(message){
+  transportType = 'none';
   isConnected = false;
-  connectButton.textContent = 'Connect Visor';
-  connectButton.classList.add('primary');
-  appendLog('Disconnected.');
+  if(remoteOnly){
+    connectButton.textContent = 'Remote Mode (USB disabled)';
+    connectButton.classList.remove('primary');
+  } else {
+    connectButton.textContent = 'Connect Visor';
+    connectButton.classList.add('primary');
+  }
+  appendLog(message);
   if(unlocked){
     enqueueRemote({ type:'connection', status:'disconnected' });
   }
@@ -869,7 +1072,8 @@ function deletePreset(){
 
 async function sendFrameToVisor(){
   if(!requireUnlock()) return;
-  if(!writer){
+  const hardwareAvailable = transportReady();
+  if(!hardwareAvailable && !remoteOnly){
     appendLog('Connect to the visor before sending.');
     return;
   }
@@ -877,12 +1081,17 @@ async function sendFrameToVisor(){
   const payload = frameToHex();
   await sendCommand('FRAME ' + slot + ' ' + payload);
   await sendCommand('MODE ' + (CUSTOM_MODE_BASE + slot));
-  appendLog('Sent frame to slot ' + (slot + 1) + ' and activated it.');
+  if(remoteOnly && !hardwareAvailable){
+    appendLog('Queued frame upload for remote visor.');
+  } else {
+    appendLog('Sent frame to slot ' + (slot + 1) + ' and activated it.');
+  }
 }
 
 async function previewFrameSlot(){
   if(!requireUnlock()) return;
-  if(!writer){
+  const hardwareAvailable = transportReady();
+  if(!hardwareAvailable && !remoteOnly){
     appendLog('Connect to the visor before previewing.');
     return;
   }
@@ -892,13 +1101,18 @@ async function previewFrameSlot(){
 
 async function clearFrameSlotOnVisor(){
   if(!requireUnlock()) return;
-  if(!writer){
+  const hardwareAvailable = transportReady();
+  if(!hardwareAvailable && !remoteOnly){
     appendLog('Connect to the visor before clearing a slot.');
     return;
   }
   const slot = frameSlotSelect ? (parseInt(frameSlotSelect.value, 10) || 0) : 0;
   await sendCommand('CLEARFRAME ' + slot);
-  appendLog('Cleared slot ' + (slot + 1) + ' on the visor.');
+  if(remoteOnly && !hardwareAvailable){
+    appendLog('Queued clear command for slot ' + (slot + 1) + '.');
+  } else {
+    appendLog('Cleared slot ' + (slot + 1) + ' on the visor.');
+  }
 }
 
 async function submitLyricScript(event){
@@ -915,7 +1129,8 @@ async function submitLyricScript(event){
   }
   lyricScript = normalized;
   lyricInput.value = lyricScript;
-  if(!writer){
+  const hardwareAvailable = transportReady();
+  if(!hardwareAvailable && !remoteOnly){
     appendLog('Connect to the visor before sending lyrics.');
     if(previewMode === 25){
       computePreview(previewMode, previewFrameCounter);
@@ -924,7 +1139,7 @@ async function submitLyricScript(event){
     return;
   }
   await sendCommand('LYRIC ' + lyricScript);
-  appendLog('Lyric script updated.');
+  appendLog(remoteOnly && !hardwareAvailable ? 'Queued lyric script update for remote visor.' : 'Lyric script updated.');
   if(previewMode === 25){
     computePreview(previewMode, previewFrameCounter);
     drawPreview();
@@ -935,7 +1150,8 @@ async function resetLyricScriptToDefault(){
   if(!requireUnlock()) return;
   lyricScript = DEFAULT_LYRIC_SCRIPT;
   if(lyricInput) lyricInput.value = lyricScript;
-  if(!writer){
+  const hardwareAvailable = transportReady();
+  if(!hardwareAvailable && !remoteOnly){
     appendLog('Connect to the visor before resetting lyrics.');
     if(previewMode === 25){
       computePreview(previewMode, previewFrameCounter);
@@ -944,7 +1160,7 @@ async function resetLyricScriptToDefault(){
     return;
   }
   await sendCommand('LYRIC ' + lyricScript);
-  appendLog('Lyric script reset to default.');
+  appendLog(remoteOnly && !hardwareAvailable ? 'Queued lyric reset for remote visor.' : 'Lyric script reset to default.');
   if(previewMode === 25){
     computePreview(previewMode, previewFrameCounter);
     drawPreview();
@@ -1259,7 +1475,7 @@ async function acknowledgeBackendCommand(id, status){
 async function processBackendCommands(){
   if(commandFetchInFlight) return;
   if(!unlocked) return;
-  if(!writer) return;
+  if(!transportReady()) return;
   if(!isRemoteWindowOpen()) return;
   const now = Date.now();
   if(lastCommandFailureAt && now - lastCommandFailureAt < 2000) return;
@@ -1289,6 +1505,7 @@ async function processBackendCommands(){
 }
 
 function startCommandPolling(){
+  if(remoteOnly) return;
   if(commandPollingActive) return;
   commandPollingActive = true;
   const tick = async () => {
@@ -2040,8 +2257,8 @@ connectButton.addEventListener('click', ()=>{
 if(pingButton){
   pingButton.addEventListener('click', () => {
     if(!requireUnlock()) return;
-    if(!writer){
-      appendLog('Not connected');
+    if(!transportReady()){
+      appendLog(remoteOnly ? 'Ping requires a local USB connection.' : 'Not connected');
       return;
     }
     updateApiStatus('Sending ping…', true);
@@ -2197,10 +2414,15 @@ if(swoopRightPicker){
   });
 }
 
-if(!('serial' in navigator)){
+if(!supportsWebUSB && !supportsWebSerial){
   connectButton.disabled = true;
-  connectButton.textContent = 'Web Serial unsupported';
-  appendLog('Your browser does not support the Web Serial API. Try Chrome or Edge on Android, Windows, macOS, or ChromeOS.');
+  connectButton.textContent = 'USB APIs unavailable';
+  appendLog('This browser does not support WebUSB or Web Serial. Try Chrome or Edge on desktop or Android.');
+} else if(remoteOnly){
+  connectButton.disabled = true;
+  connectButton.textContent = 'Remote Mode (USB disabled)';
+  connectButton.classList.remove('primary');
+  appendLog('Remote-only cloud control active. USB features disabled on this dashboard.');
 }
 
 if(!storageAvailable){
