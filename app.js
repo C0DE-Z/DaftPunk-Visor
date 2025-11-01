@@ -14,6 +14,11 @@ const REMOTE_UNLOCK_WINDOW_MS = 20000;
 const WEBUSB_VENDOR_FILTERS = [
   { vendorId: 0x239A }, // Adafruit
   { vendorId: 0x2E8A }, // Raspberry Pi (RP2040)
+  { vendorId: 0x2341 }, // Arduino
+  { vendorId: 0x1209 }, // PID.codes community VID
+  { vendorId: 0x1B4F }, // SparkFun
+  { vendorId: 0x16D0 }, // MCUdude / generic maker VID
+  { classCode: 0xff, subclassCode: 0x00, protocolCode: 0x00 }, // Any vendor-specific interface with WebUSB descriptor
 ];
 const remoteOnly = (() => {
   try{
